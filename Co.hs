@@ -4,21 +4,13 @@ import Language.Haskell.TH.Syntax
 import Language.Haskell.TH.Lib
 import Data.Char
 
-{-
-TyConI
-    (DataD [] Test.Product
-        [KindedTV a StarT,KindedTV b StarT]
-        Nothing
-        [NormalC Test.Product
-            [(Bang NoSourceUnpackedness NoSourceStrictness,
-              AppT (AppT (TupleT 2) (VarT a)) (VarT b))]] [])
--}
 -- Makes dual typeclass from given name
 mkDualC :: Name -> Q [Dec]
 mkDualC name = do
     dec <- extractDec <$> reify name
     return . map (stripConstraints . flipArrows . coNames name) $ [dec]
 
+-- Makes dual datatypes from given name
 mkDualT :: Name -> Q [Dec]
 mkDualT name = do
     dec <- extractDec <$> reify name
@@ -39,6 +31,7 @@ coNames n (DataD cxt1 name vars k cons cxt2) =
     DataD cxt1 (prefixName "Co" name) vars k (map (coCons n) cons) cxt2
 coNames n x = x
 
+-- Helps coNames with Type data
 coTypes :: Name -> Type -> Type
 coTypes n (ForallT vars cxt t) = ForallT vars (map (coTypes n) cxt) t
 coTypes n (AppT t1 t2) = AppT (coTypes n t1) (coTypes n t2)
@@ -46,6 +39,7 @@ coTypes n (SigT t1 t2) = SigT (coTypes n t1) (coTypes n t2)
 coTypes n (ConT t) = ConT $ if t == n then prefixName "Co" t else t
 coTypes n t = t
 
+-- Helps coNames with Con data
 coCons :: Name -> Con -> Con
 coCons n (NormalC name types) = NormalC (prefixName "Co" name) types
 coCons n (RecC name types) = RecC (prefixName "Co" name) types
@@ -75,10 +69,12 @@ flipType (AppT t1 t2) = AppT (flipType t1) (flipType t2)
 flipType (SigT t k) = SigT (flipType t) k
 flipType t = t
 
+-- Dualize a data constructor
 flipConstructor :: Dec -> Dec
 flipConstructor (DataD cxt1 name vars k cons cxt2) =
     DataD cxt1 name vars k (flipCons 1 cons) cxt2
 
+-- Helps flipConstructor with Con data
 flipCons :: Int -> [Con] -> [Con]
 flipCons _ [] = []
 flipCons n [NormalC name btypes@((b,t):bts)] = zipWith NormalC newNames newlist
@@ -96,6 +92,7 @@ flipCons _ _ = undefined
 flipBangType :: BangType -> [BangType]
 flipBangType (bang, typ) = [(bang, typ') | typ' <- expandType typ]
 
+-- Reads types to determine structure of constructor
 expandType :: Type -> [Type]
 expandType (AppT t1 t2) = expandType t1 ++ expandType t2
 expandType (TupleT _) = []
