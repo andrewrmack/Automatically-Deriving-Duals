@@ -5,36 +5,29 @@ import Language.Haskell.TH.Lib
 import Data.Char
 
 {-
-monadDef =
-    ClassD [] Test.Monad [KindedTV m (AppT (AppT ArrowT StarT) StarT)] []
-       [SigD Test.unit
-           (ForallT
-               [KindedTV m (AppT (AppT ArrowT StarT) StarT)]
-               [AppT (ConT Test.Monad) (VarT m)]
-               (ForallT [KindedTV a StarT] []
-                   (AppT (AppT ArrowT (VarT a))
-                         (AppT (VarT m) (VarT a))
-                   )
-               )
-           ),
-        SigD Test.join
-            (ForallT
-                [KindedTV m (AppT (AppT ArrowT StarT) StarT)]
-                [AppT (ConT Test.Monad) (VarT m)]
-                (ForallT [KindedTV a StarT] []
-                    (AppT (AppT ArrowT (AppT (VarT m) (AppT (VarT m) (VarT a))))
-                    (AppT (VarT m) (VarT a)))))]
+TyConI
+    (DataD [] Test.Product
+        [KindedTV a StarT,KindedTV b StarT]
+        Nothing
+        [NormalC Test.Product
+            [(Bang NoSourceUnpackedness NoSourceStrictness,
+              AppT (AppT (TupleT 2) (VarT a)) (VarT b))]] [])
 -}
-
 -- Makes dual typeclass from given name
-mkDuals :: Name -> Q [Dec]
-mkDuals name = do
+mkDualC :: Name -> Q [Dec]
+mkDualC name = do
     dec <- extractDec <$> reify name
     return . map (stripConstraints . flipArrows . coNames name) $ [dec]
+
+mkDualT :: Name -> Q [Dec]
+mkDualT name = do
+    dec <- extractDec <$> reify name
+    return . map (flipConstructor . coNames name) $ [dec]
 
 -- extracts the declaration from a reified name
 extractDec :: Info -> Dec
 extractDec (ClassI d _) = d
+extractDec (TyConI d) = d
 extractDec _ = error "not a supported type of structure"
 
 -- puts a "co" or "Co" in front of every name
@@ -42,6 +35,8 @@ coNames :: Name -> Dec -> Dec
 coNames n (ClassD cxt name vars deps funs) =
     ClassD cxt (prefixName "Co" name) vars deps (map (coNames n) funs)
 coNames n (SigD name typ) = SigD (prefixName "co" name) (coTypes n typ)
+coNames n (DataD cxt1 name vars k cons cxt2) =
+    DataD cxt1 (prefixName "Co" name) vars k (map (coCons n) cons) cxt2
 coNames n x = x
 
 coTypes :: Name -> Type -> Type
@@ -51,13 +46,24 @@ coTypes n (SigT t1 t2) = SigT (coTypes n t1) (coTypes n t2)
 coTypes n (ConT t) = ConT $ if t == n then prefixName "Co" t else t
 coTypes n t = t
 
+coCons :: Name -> Con -> Con
+coCons n (NormalC name types) = NormalC (prefixName "Co" name) types
+coCons n (RecC name types) = RecC (prefixName "Co" name) types
+coCons n (InfixC type1 name type2) = InfixC type1 (prefixName "Co" name) type2
+coCons n (ForallC types cxt con) = ForallC types cxt (coCons n con)
+coCons n (GadtC names btypes t) = GadtC (map (prefixName "Co") names) btypes t
+coCons n (RecGadtC names btypes t) = RecGadtC (map (prefixName "Co") names) btypes t
+
 -- prefixes name with string; use for types and constructors
 prefixName :: String -> Name -> Name
+suffixName :: String -> Name -> Name
 prefixName s n = mkName $ s ++ nameBase n
+suffixName s n = mkName $ nameBase n ++ s
 
 -- Dualize declarations
 flipArrows :: Dec -> Dec
-flipArrows (ClassD cxt name vars deps funs) = ClassD cxt name vars deps (map flipArrows funs)
+flipArrows (ClassD cxt name vars deps funs) =
+    ClassD cxt name vars deps (map flipArrows funs)
 flipArrows (SigD name typ) = SigD name (flipType typ)
 flipArrows x = x
 
@@ -69,15 +75,33 @@ flipType (AppT t1 t2) = AppT (flipType t1) (flipType t2)
 flipType (SigT t k) = SigT (flipType t) k
 flipType t = t
 
-{-
- - For some reason, the reified typeclass declarations get a bunch of extra costraints
- - which result in error when I try to dualize. With monad, I get the following type for counit
- -
- - counit :: forall m. CoMonad m => forall m. Monad m => forall a. m a -> a
- -
- - This function strips the broken constraints
- -}
+flipConstructor :: Dec -> Dec
+flipConstructor (DataD cxt1 name vars k cons cxt2) =
+    DataD cxt1 name vars k (flipCons 1 cons) cxt2
 
+flipCons :: Int -> [Con] -> [Con]
+flipCons _ [] = []
+flipCons n [NormalC name btypes@((b,t):bts)] = zipWith NormalC newNames newlist
+    where
+        totalf (AppT t _) = 1 + totalf t
+        totalf _ = 0
+        total = totalf t
+        names = replicate (total+1) name
+        nums  = [n .. n+total]
+        newNames = zipWith suffixName (map show nums) names
+        newlist = map (:[]) (concatMap flipBangType btypes)
+
+flipCons _ _ = undefined
+
+flipBangType :: BangType -> [BangType]
+flipBangType (bang, typ) = [(bang, typ') | typ' <- expandType typ]
+
+expandType :: Type -> [Type]
+expandType (AppT t1 t2) = expandType t1 ++ expandType t2
+expandType (TupleT _) = []
+expandType t = [t]
+
+-- strip bogus constraint while dualizing
 stripConstraints :: Dec -> Dec
 stripConstraints (ClassD cxt name vars deps funs) =
     ClassD cxt name vars deps (map stripConstraints funs)
@@ -86,5 +110,5 @@ stripConstraints x = x
 
 -- helps stripConstraints to with Types
 stripCons :: Type -> Type
-stripCons (ForallT vars cxt typ) = ForallT vars [] (stripCons typ)
+stripCons (ForallT vars cxt typ) = typ
 stripCons t = t
